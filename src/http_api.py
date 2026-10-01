@@ -42,6 +42,14 @@ def make_handler(service: Service, static_dir: str):
         def _identity(self) -> Tuple[str, str]:
             return self.headers.get("X-Actor", ""), self.headers.get("X-Role", "")
 
+        def _request_id(self, body: Dict[str, Any]) -> Optional[str]:
+            value = body.get("request_id")
+            if value is None:
+                value = self.headers.get("X-Request-Id")
+            if value is not None:
+                value = str(value).strip()
+            return value or None
+
         def _body(self) -> Dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0") or 0)
             if length <= 0:
@@ -76,27 +84,35 @@ def make_handler(service: Service, static_dir: str):
         def do_GET(self) -> None:
             try:
                 path = urlparse(self.path).path
+                actor, role = self._identity()
                 if path == "/health":
                     self._json(200, {"status": "ok"})
                 elif path == "/":
                     self._html(root / "index.html")
                 elif path == "/api/items":
-                    actor, role = self._identity()
-                    del actor
                     self._json(200, {"items": service.list_items(role)})
+                elif path == "/api/renewals":
+                    self._json(200, {"renewals": service.list_renewals(role)})
+                elif path.startswith("/api/renewals/"):
+                    renewal_id = int(path.split("/")[3])
+                    self._json(200, service.get_renewal(renewal_id, role))
                 elif path.startswith("/api/items/") and path.endswith("/records"):
                     item_id = int(path.split("/")[3])
-                    actor, role = self._identity()
-                    del actor
                     self._json(200, {"records": service.list_records(item_id, role)})
+                elif path.startswith("/api/items/") and "/attachments/" in path:
+                    parts = path.split("/")
+                    item_id = int(parts[3])
+                    attachment_id = int(parts[5])
+                    self._json(200, service.view_attachment(
+                        item_id, attachment_id, actor, role))
+                elif path.startswith("/api/items/") and path.endswith("/attachments"):
+                    item_id = int(path.split("/")[3])
+                    self._json(200, {"attachments": service.list_attachments(
+                        item_id, actor, role)})
                 elif path.startswith("/api/items/"):
                     item_id = int(path.rsplit("/", 1)[-1])
-                    actor, role = self._identity()
-                    del actor
                     self._json(200, service.get_item(item_id, role))
                 elif path == "/api/audit":
-                    actor, role = self._identity()
-                    del actor
                     self._json(200, {"events": service.audit(role)})
                 else:
                     self._json(404, {"error": "not_found"})
@@ -110,6 +126,12 @@ def make_handler(service: Service, static_dir: str):
                 body = self._body()
                 if path == "/api/items":
                     self._json(201, service.create_item(body, actor, role))
+                elif path == "/api/renewals":
+                    self._json(201, service.create_renewal(
+                        body, actor, role, self._request_id(body)))
+                elif path.startswith("/api/renewals/") and path.endswith("/approve"):
+                    renewal_id = int(path.split("/")[3])
+                    self._json(200, service.approve_renewal(renewal_id, actor, role))
                 elif path.startswith("/api/items/") and path.endswith("/records"):
                     item_id = int(path.split("/")[3])
                     self._json(201, service.add_record(item_id, body, actor, role))
@@ -119,6 +141,9 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif path.startswith("/api/items/") and path.endswith("/attachments"):
+                    item_id = int(path.split("/")[3])
+                    self._json(201, service.upload_attachment(item_id, body, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
