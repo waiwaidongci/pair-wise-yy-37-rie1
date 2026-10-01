@@ -4,7 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .domain import (ConflictError, DomainError, NotFoundError, PermissionDenied,
                      ValidationError)
@@ -98,6 +98,28 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"events": service.audit(role)})
+                elif path == "/api/renewals":
+                    actor, role = self._identity()
+                    del actor
+                    query = parse_qs(urlparse(self.path).query)
+                    status = query.get("status", [None])[0]
+                    self._json(200, {"renewals": service.list_renewals(role, status)})
+                elif path.startswith("/api/renewals/by-request/"):
+                    request_id = unquote(path.rsplit("/", 1)[-1])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.get_renewal_by_request(request_id, role))
+                elif path.startswith("/api/renewals/") and path.endswith("/attachments"):
+                    renewal_id = int(path.split("/")[3])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, {"attachments": service.list_attachments(
+                        renewal_id, role)})
+                elif path.startswith("/api/renewals/"):
+                    renewal_id = int(path.split("/")[3])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.get_renewal(renewal_id, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
@@ -113,12 +135,31 @@ def make_handler(service: Service, static_dir: str):
                 elif path.startswith("/api/items/") and path.endswith("/records"):
                     item_id = int(path.split("/")[3])
                     self._json(201, service.add_record(item_id, body, actor, role))
+                elif path.startswith("/api/items/") and path.endswith("/close"):
+                    parts = path.split("/")
+                    item_id = int(parts[3])
+                    record_id = int(parts[5])
+                    self._json(200, service.close_record(
+                        item_id, record_id, actor, role))
                 elif path.startswith("/api/items/") and path.endswith("/transition"):
                     item_id = int(path.split("/")[3])
                     target = body.get("target")
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif path == "/api/renewals":
+                    result = service.create_renewal(body, actor, role)
+                    self._json(200 if result.get("replayed") else 201, result)
+                elif path.startswith("/api/renewals/") and path.endswith("/transition"):
+                    renewal_id = int(path.split("/")[3])
+                    target = body.get("target")
+                    expected = body.get("expected_version")
+                    self._json(200, service.transition_renewal(
+                        renewal_id, target, expected, actor, role))
+                elif path.startswith("/api/renewals/") and path.endswith("/attachments"):
+                    renewal_id = int(path.split("/")[3])
+                    self._json(201, service.upload_attachment(
+                        renewal_id, body, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:
